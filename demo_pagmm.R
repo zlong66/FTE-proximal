@@ -1,5 +1,5 @@
-source("~/data_generation_pagmm.R")
-source("~/pagmm.R")
+source("data_generation_pagmm.R")
+source("pagmm.R")
 
 ### Setup ###
 
