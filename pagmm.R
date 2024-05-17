@@ -137,72 +137,8 @@ get_kernel <- function(X, A.X, Y, A.Y, ker1="gauss", ker2="gauss",
 }
 
 
-# distance2.matrix <- function(X1, X2) {
-#   X1 <- matrix(X1, ncol=1)
-#   X2 <- matrix(X2, ncol=1)
-#   dis2M <- matrix(NA, nrow(X1), nrow(X2))
-#   for (i in 1:nrow(X1)) {
-#     for (j in 1:nrow(X2)) {
-#       dis2M[i, j] <- (X1[i, ] - X2[j, ])^2
-#     }
-#   }
-#   return(dis2M)
-# }
-
-
-# # get kernel matrix when the medians are calculated for each variable
-# get_kernel_new_ver <- function(X, A.X, Y=NULL, A.Y=NULL, ker1="gauss", ker2="gauss",
-#                                sigma1, sigma2=1, poly=c(1,1)){
-#   if (is.null(Y) & is.null(A.Y)){Y=X; A.Y=A.X}
-#   
-#   if (ker1=="gauss"){
-#     K1=1
-#     dim <- ncol(X)
-#     for (i in 1:dim){
-#       sig <- sigma1[i]
-#       K_0 <- distance2.matrix(X[,i],Y[,i])
-#       K_m <- exp(-K_0/(2*sig^2))
-#       K1 = K1*K_m
-#     }
-#   }else if (ker1=="sob"){
-#     K1 <- matrix(NA, nrow=nrow(X),ncol=nrow(Y))
-#     for (i in 1:nrow(X)){
-#       for (j in 1:nrow(Y)){
-#         K1[i,j] <- K.sob.prod(X[i,],Y[j,])
-#       }
-#     }
-#   }
-#   
-#   K2 <- matrix(NA, nrow=nrow(X),ncol=nrow(Y))
-#   for (i in 1:nrow(X)){
-#     for (j in 1:nrow(Y)){
-#       if (ker2=="gauss"){
-#         K2[i,j]=K.gauss.l2(A.X[i,],A.Y[j,],sigma=sigma2)
-#       }else if (ker2=="poly"){
-#         K2[i,j]=K.poly(A.X[i,],A.Y[j,],c=poly[1], d=poly[2])
-#       }
-#     }
-#   }
-#   
-#   K <- K1*K2
-#   return(K)
-# }
-
 ###########################Calculate the median heuristic ##############################
 
-# # Calculate the mean norm for A and use it for sigma2
-# mean_norm <- function(treatment){  
-#   norm <- c()
-#   inner.p <- c()
-#   for (i in 1:200){
-#     t <- seq(0,1,len = ncol(treatment))
-#     norm[i] <- sqrt(trapz(t, treatment[i,]^2))
-#     inner.p[i] <- trapz(t, treatment[i,]^2)
-#   }
-#   m.norm <- mean(norm)
-#   m.norm2 <- sqrt(mean(inner.p))
-#   return(list(m.norm2=m.norm2,m.norm=m.norm))
-# }
 
 # function for median heuristic for scaler
 get_median_s <- function(X){
@@ -211,11 +147,6 @@ get_median_s <- function(X){
   return(median)
 }
 
-# # get median for each scaler variable, and output a vector of medians
-# get_median_s_vec <- function(X.scaler){
-#   medians <- apply(X.scaler, 2, get_median_s)
-#   return(medians)
-# }
 
 # functin for median heuristic for functions
 get_median_f <- function(A){
@@ -239,16 +170,6 @@ dist_fun <- function(A){
   # only use the lower diagonal of the matrix
   return(dist[lower.tri(dist, diag = FALSE)])
 }
-
-# dist_matrix <- function(x1,x2){
-#   dist.M <- matrix(NA, nrow=length(x1), ncol=length(x2))
-#   for (i in 1:length(x1)){
-#     for (j in 1:length(x2)){
-#       dist.M[i,j] = (x1[i]-x2[j])^2
-#     }
-#   }
-#   return(dist.M)
-# }
 
 
 dist_fun_A <- function(A1, A2){
@@ -549,8 +470,6 @@ RKHSCV <- function(data, ker1="gauss",ker2="gauss", CF=T, n_alphas=30, cv=5,
                                 ker1=ker1, ker2=ker2, sigma1_h=sigma1_h, sigma2=sigma2, poly=poly, alpha_scale=best_alpha_scale, WX=WX.all)
   }
    
-    
-  # remove
   Gram.test <- G.cont(WX.test, WX.all, type=ker1, sigma=sigma1_h)
   A.test <- as.list(as.data.frame(t(treatment.test)))
   
