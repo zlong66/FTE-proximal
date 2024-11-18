@@ -2,7 +2,7 @@ import os,sys
 ROOT_PATH = os.path.split(os.path.dirname(os.path.abspath(__file__)))[0]
 sys.path.append(ROOT_PATH)
 import torch
-from scenarios.abstract_scenario import AbstractScenario
+# from scenarios.abstract_scenario import AbstractScenario
 import autograd.numpy as np
 # import numpy as np
 from joblib import Parallel, delayed
@@ -89,15 +89,23 @@ def indicator_kern(x1, x2):
 
 
 def data_transform(X):
-    scaler = preprocessing.StandardScaler(
-
-    )
+    scaler = preprocessing.StandardScaler()
     if X.ndim == 1:
         X_scaled = scaler.fit_transform(X.reshape(-1,1)).squeeze()
         return X_scaled, scaler
     else:
         X_scaled = scaler.fit_transform(X).squeeze()
         return X_scaled, scaler
+
+def data_transform_sob(X):
+    scaler = preprocessing.MinMaxScaler()
+    if X.ndim == 1:
+        X_scaled = scaler.fit_transform(X.reshape(-1,1)).squeeze()
+        return X_scaled, scaler
+    else:
+        X_scaled = scaler.fit_transform(X).squeeze()
+        return X_scaled, scaler
+
 
 
 def data_inv_transform(X_scaled, X_scaler):

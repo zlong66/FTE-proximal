@@ -5,9 +5,10 @@ import pandas as pd
 import plotly.graph_objects as go
 #from PMMR.util import get_median_inter_mnist, Kernel, load_data, ROOT_PATH, jitchol, _sqdist, \
 #    remove_outliers, nystrom_decomp_from_orig, nystrom_decomp_from_sub, chol_inv, bundle_az_aw, visualise_ATEs, data_transform, data_inv_transform, indicator_kern
-from util_R import get_median_inter_mnist, Kernel, load_data, ROOT_PATH, jitchol, _sqdist, \
-    remove_outliers, nystrom_decomp_from_orig, nystrom_decomp_from_sub, chol_inv, bundle_az_aw, visualise_ATEs, data_transform, data_inv_transform, indicator_kern
-from simulation_arthur import data_transform
+from util_R import get_median_inter_mnist, Kernel, load_data, jitchol, _sqdist, \
+    remove_outliers, nystrom_decomp_from_orig, nystrom_decomp_from_sub, chol_inv, bundle_az_aw, \
+    visualise_ATEs, data_transform, data_transform_sob, data_inv_transform, indicator_kern
+# from simulation_arthur import data_transform
 from datetime import date
 from sklearn.metrics import pairwise_distances
 from sklearn.model_selection import KFold
@@ -21,6 +22,8 @@ from scipy import integrate
 import matplotlib.pyplot as plt
 
 # Global parameters
+
+ROOT_PATH = os.getcwd()
 
 Nfeval = 1
 JITTER_W, JITTER_L, JITTER_LW = 1e-12, 1e-5, 1e-7
@@ -45,8 +48,11 @@ wx_dim = 3
 
 
 
+
+
 class parameters():
-    def __init__(self, sem, hparam, selection_metric, cond_metric, supp_test, log_al_bounds, log_bl_bounds, nystr_M, offset, lmo):
+    def __init__(self, sem, hparam, selection_metric, cond_metric, supp_test, log_al_bounds, log_bl_bounds, 
+                 nystr_M, offset, lmo, ker1, ker2, poly):
         self.sem = sem
         self.hparam = hparam
         self.selection_metric = selection_metric
@@ -57,6 +63,9 @@ class parameters():
         self.nystr_M = nystr_M
         self.offset = offset
         self.lmo = lmo
+        self.ker1 = ker1
+        self.ker2 = ker2
+        self.poly = poly
         
 
 def compute_bandwidth_median_dist_ver2(X):
@@ -84,6 +93,28 @@ def compute_bandwidth_median_dist_for_A(A):
     print("al default for A:", np.median(dist))
     return np.median(dist)
 
+def k1(t):
+    return t-0.5
+  
+def k2(t):
+    k2 = (k1(t)**2 - 1/12)/2
+    return k2
+  
+def k4(t):
+    k4 = (k1(t)**4 - k1(t)**2/2 + 7/240)/24
+    return k4
+  
+def k_sob(s, t):
+    ans = 1 + k1(s)*k1(t) + k2(s)*k2(t) - k4(abs(s-t))
+    return ans
+  
+def k_sob_prod(arr1, arr2):
+    p = len(arr1)
+    out = 1
+    for j in range(p):
+        out = out*k_sob(arr1[j], arr2[j])
+    
+    return out
 
 #def make_gaussian_prodkern(arr1, arr2, sigma):
 #    dims = arr1.shape[-1]
@@ -108,7 +139,29 @@ def make_gaussian_prodkern_ver2(arr1, arr2, sigma):
     assert arr1.shape[-1] == arr2.shape[-1]
     sqdist = pairwise_distances(X=arr1, Y=arr2, metric='euclidean')
     K = np.exp(-sqdist**2/ sigma / sigma/2)
-    return K    
+    return K   
+  
+def make_sob_kern(arr1, arr2):
+    assert arr1.shape[-1] == arr2.shape[-1]
+    K_sob = np.zeros((arr1.shape[0], arr2.shape[0]))
+    for i in range (arr1.shape[0]):
+      for j in range(arr2.shape[0]):
+        K_sob[i,j] = k_sob_prod(arr1[i,:], arr2[j,:])
+        
+    return K_sob
+        
+
+def make_poly_kern_A(A1, A2, poly=[1,1]):
+    assert A1.shape[-1] == A2.shape[-1]
+    t = np.linspace(0, 1, num=A1.shape[1])
+    K_A = np.zeros((A1.shape[0], A2.shape[0]))
+    for i in range(A1.shape[0]):
+      for j in range(A2.shape[0]):
+        in_prod = integrate.trapezoid(A1[i,:]*A2[j,:], t)
+        K_A[i,j] = (in_prod + poly[0])**poly[1]
+        
+    return K_A
+
 
 def make_gaussian_kern_A(A1, A2, sigma_a):
     assert A1.shape[-1] == A2.shape[-1]
@@ -123,14 +176,28 @@ def make_gaussian_kern_A(A1, A2, sigma_a):
     return K_A
     
 
-def make_prodkern_with_functional_treat(arr1, arr2, sigma_wx, sigma_a, wx_dim):
+def make_prodkern_with_functional_treat(arr1, arr2, ker1, ker2, poly, sigma_wx, sigma_a, wx_dim):
     dims = arr1.shape[-1]
     arr1_wx = arr1[:,:wx_dim]
     arr2_wx = arr2[:,:wx_dim]
-    K_wx = make_gaussian_prodkern_ver2(arr1_wx, arr2_wx, sigma_wx)
+    
+    if ker1 == "gauss":
+        K_wx = make_gaussian_prodkern_ver2(arr1_wx, arr2_wx, sigma_wx)
+    elif ker1 == "sob":
+        K_wx = make_sob_kern(arr1_wx, arr2_wx)
+    else:
+        print("Incorrect kernel type.")
+    
     A1 = arr1[:,wx_dim:]
     A2 = arr2[:,wx_dim:]
-    K_A = make_gaussian_kern_A(A1, A2, sigma_a)
+    if ker2 == "gauss":
+        K_A = make_gaussian_kern_A(A1, A2, sigma_a)
+    elif ker2 == "poly":
+        K_A = make_poly_kern_A(A1, A2, poly)
+    else:
+        print("Incorrect kernel type.")
+
+    
     K = K_wx*K_A
     return K
 
@@ -144,9 +211,15 @@ def process_data_functional_treat(train_size, dev_size, test_size, args, data_se
     test_WX, test_ZX, test_Y = sim_data[train_size:,[1,4,5]], sim_data[train_size:, 3:], sim_data[train_size:, 0].reshape(-1,1)
 
     # Standardize WX and ZX
-    train_WX_scaled, WX_scaler = data_transform(train_WX)
+    if args.ker1 == "gauss":
+        train_WX_scaled, WX_scaler = data_transform(train_WX)
+        train_ZX_scaled, ZX_scaler = data_transform(train_ZX)
+        
+    elif args.ker1 == "sob":
+        train_WX_scaled, WX_scaler = data_transform_sob(train_WX)
+        train_ZX_scaled, ZX_scaler = data_transform_sob(train_ZX)
+        
     test_WX_scaled = WX_scaler.transform(test_WX)
-    train_ZX_scaled, ZX_scaler = data_transform(train_ZX)
     test_ZX_scaled = ZX_scaler.transform(test_ZX)
 
     do_A = pd.read_csv(os.path.join(LOAD_PATH, "do_A_{}.csv".format(data_seed)), header=0).values
@@ -170,7 +243,7 @@ def process_data_functional_treat(train_size, dev_size, test_size, args, data_se
 
 
 #def compute_alpha(train_size, eig_vec_K, W_nystr, X, Y, W, eig_val_K, nystr, params_l):
-def compute_alpha(train_size, eig_vec_K, W_nystr, X, Y, W, eig_val_K, nystr, params_l, sigma_a, wx_dim):
+def compute_alpha(train_size, eig_vec_K, W_nystr, X, Y, W, eig_val_K, nystr, ker1, ker2, poly, params_l, sigma_a, wx_dim):
     N2 = train_size ** 2
     EYEN = np.eye(train_size)
 
@@ -180,7 +253,7 @@ def compute_alpha(train_size, eig_vec_K, W_nystr, X, Y, W, eig_val_K, nystr, par
     print('making K_L')
     #K_L = make_gaussian_prodkern(X, X, al)
     t1 = time.time()
-    K_L = make_prodkern_with_functional_treat(X, X, al, sigma_a, wx_dim)
+    K_L = make_prodkern_with_functional_treat(X, X, ker1, ker2, poly, al, sigma_a, wx_dim)
     t2 = time.time()
     print('end of making K_L')
     print('making K_L used {}s'.format(t2 - t1))
@@ -214,7 +287,7 @@ def compute_alpha(train_size, eig_vec_K, W_nystr, X, Y, W, eig_val_K, nystr, par
     return alpha
 
 
-def get_causal_effect(do_A, WX_marginal, X, wx_dim, alpha, params_l, sigma_a, offset=0):
+def get_causal_effect(do_A, WX_marginal, X, wx_dim, alpha, ker1, ker2, poly, params_l, sigma_a, offset=0):
     "to be called within experiment function."
     assert WX_marginal.ndim == 2
     assert do_A.ndim == 2
@@ -229,7 +302,7 @@ def get_causal_effect(do_A, WX_marginal, X, wx_dim, alpha, params_l, sigma_a, of
     
     print('making K_L ate.')
     t1 = time.time()
-    K_L_ate = make_prodkern_with_functional_treat(awx_rep, X, al, sigma_a, wx_dim=wx_dim)
+    K_L_ate = make_prodkern_with_functional_treat(awx_rep, X, ker1, ker2, poly, al, sigma_a, wx_dim=wx_dim)
     t2 = time.time()
     print('making K_L used {}s'.format(t2 - t1))
     
@@ -246,7 +319,7 @@ def get_causal_effect(do_A, WX_marginal, X, wx_dim, alpha, params_l, sigma_a, of
     return ate_est
   
   
-def get_causal_effect_crossfit(do_A, WX_marginal, X, Y, W_, wx_dim, params_l, sigma_a, offset=0, k=3):
+def get_causal_effect_crossfit(do_A, WX_marginal, X, Y, W_, wx_dim, ker1, ker2, poly, params_l, sigma_a, offset=0, k=3):
   
     assert WX_marginal.ndim == 2
     assert do_A.ndim == 2
@@ -267,9 +340,10 @@ def get_causal_effect_crossfit(do_A, WX_marginal, X, Y, W_, wx_dim, params_l, si
       
 
       alpha = compute_alpha(train_size = X_train.shape[0], eig_vec_K=None, W_nystr=None, X=X_train, Y=Y_train, W=W_train, eig_val_K=None, nystr=False, 
-                            params_l=params_l, sigma_a=sigma_a, wx_dim=wx_dim)
+                            ker1=ker1, ker2=ker2, poly=poly, params_l=params_l, sigma_a=sigma_a, wx_dim=wx_dim)
       
-      est_causal_effect = get_causal_effect(do_A=do_A, WX_marginal=WX_test, X=X_train, wx_dim=wx_dim, alpha=alpha, params_l=params_l, sigma_a=sigma_a, offset=offset)
+      est_causal_effect = get_causal_effect(do_A=do_A, WX_marginal=WX_test, X=X_train, wx_dim=wx_dim, alpha=alpha, 
+                                            ker1=ker1, ker2=ker2, poly=poly, params_l=params_l, sigma_a=sigma_a, offset=offset)
       ate_est.append(est_causal_effect)
       
     
@@ -283,9 +357,9 @@ def get_causal_effect_crossfit(do_A, WX_marginal, X, Y, W_, wx_dim, params_l, si
 
 
 
-def mmr_loss(ak, al, bl, sigma_a, alpha, y_test, aw_test, az_test, X, wx_dim, zx_dim, offset):
+def mmr_loss(ker1, ker2, poly, ak, al, bl, sigma_a, alpha, y_test, aw_test, az_test, X, wx_dim, zx_dim, offset):
     print('making K_L_mse not supported.')
-    K_L_mse = make_prodkern_with_functional_treat(aw_test, X, al, sigma_a, wx_dim)
+    K_L_mse = make_prodkern_with_functional_treat(aw_test, X, ker1, ker2, poly, al, sigma_a, wx_dim)
     print('end of making K_L_mse not supported.')
     mse_L = bl * bl * K_L_mse
     mse_h = mse_L @ alpha + offset
@@ -293,7 +367,7 @@ def mmr_loss(ak, al, bl, sigma_a, alpha, y_test, aw_test, az_test, X, wx_dim, zx
     print('supp_az shape: ', az_test.shape)
     N = y_test.shape[0]
     print('making K_W test.')
-    K = make_prodkern_with_functional_treat(az_test, az_test, ak, sigma_a, zx_dim)
+    K = make_prodkern_with_functional_treat(az_test, az_test, ker1, ker2, poly, ak, sigma_a, zx_dim)
     print('end of making K_W test.')
 
     W_U = (K - np.diag(np.diag(K)))
@@ -311,7 +385,7 @@ def mmr_loss(ak, al, bl, sigma_a, alpha, y_test, aw_test, az_test, X, wx_dim, zx
     return loss_V[0, 0], loss_U[0, 0]
 
 
-def LMO_err_global(log_params_l, sigma_a, train_size, W, W_nystr_Y, eig_vec_K, inv_eig_val_K, X, Y, wx_dim, nystr, offset, M=10):
+def LMO_err_global(ker1, ker2, poly, log_params_l, sigma_a, train_size, W, W_nystr_Y, eig_vec_K, inv_eig_val_K, X, Y, wx_dim, nystr, offset, M=10):
     EYEN = np.eye(train_size)
     N2 = train_size ** 2
 
@@ -319,7 +393,7 @@ def LMO_err_global(log_params_l, sigma_a, train_size, W, W_nystr_Y, eig_vec_K, i
     al, bl = anp.exp(log_al).squeeze(), anp.exp(log_bl).squeeze()
     # print('lmo_err params_l', params_l)
     print('lmo_err al, bl', al, bl)
-    K_L = make_prodkern_with_functional_treat(X, X, al, sigma_a, wx_dim)
+    K_L = make_prodkern_with_functional_treat(X, X, ker1, ker2, poly, al, sigma_a, wx_dim)
     L = bl * bl * K_L + JITTER_L * EYEN
     # L = bl * bl * K_L
     print('condition number of L: ', np.linalg.cond(L, p=2))
@@ -353,7 +427,8 @@ def LMO_err_global(log_params_l, sigma_a, train_size, W, W_nystr_Y, eig_vec_K, i
 
 def compute_losses(params_l, ax, w_samples, y_samples, y_axz, x_on,
                    AW_test, AZ_test, Y_test, supp_y, supp_aw, supp_az,
-                   X, Y, Z, W, W_nystr_Y, eig_vec_K, inv_eig_val_K, nystr, test_Y, ak, sigma_a, alpha, offset, wx_dim,zx_dim, args):
+                   X, Y, Z, W, W_nystr_Y, eig_vec_K, inv_eig_val_K, nystr, test_Y, 
+                   ker1, ker2, poly, ak, sigma_a, alpha, offset, wx_dim,zx_dim, args):
     "to calculated the expected error E_{A,X,Z ~ unif}[E[Y - h(A,X,W)|A,X,Z]]."
 
     al, bl = params_l
@@ -392,7 +467,7 @@ def compute_losses(params_l, ax, w_samples, y_samples, y_axz, x_on,
         mean_sq_error, mse_alternative, y_axz_recon = None, None, None
 
     # standard mse
-    K_L_mse = make_prodkern_with_functional_treat(AW_test, X, al, sigma_a=sigma_a, wx_dim=wx_dim)
+    K_L_mse = make_prodkern_with_functional_treat(AW_test, X, ker1, ker2, poly, al, sigma_a=sigma_a, wx_dim=wx_dim)
     mse_L = bl * bl * K_L_mse
     mse_h = mse_L @ alpha + offset
     mse_standard = np.mean((test_Y.flatten() - mse_h.flatten()) ** 2)
@@ -401,18 +476,18 @@ def compute_losses(params_l, ax, w_samples, y_samples, y_axz, x_on,
     if args.supp_test:
         mse_supp = compute_loss_on_supported_test_set(X=X, al=al, bl=bl, alpha=alpha,
                                                       supp_y=supp_y, supp_aw=supp_aw, supp_az=supp_az, offset=offset)
-        mmr_v_supp, mmr_u_supp = mmr_loss(ak=ak, al=al, bl=bl, sigma_a=sigma_a, alpha=alpha, y_test=supp_y, aw_test=supp_aw,
+        mmr_v_supp, mmr_u_supp = mmr_loss(ker1=ker1, ker2=ker2, poly=poly, ak=ak, al=al, bl=bl, sigma_a=sigma_a, alpha=alpha, y_test=supp_y, aw_test=supp_aw,
                                           az_test=supp_az, X=X, wx_dim=wx_dim, zx_dim=zx_dim, offset=offset)
     else:
         mse_supp, mmr_v_supp, mmr_u_supp = None, None, None
     
     # mmr losses
-    mmr_v, mmr_u = mmr_loss(ak=ak, al=al, bl=bl, sigma_a=sigma_a,alpha=alpha, y_test=Y_test, aw_test=AW_test,
+    mmr_v, mmr_u = mmr_loss(ker1=ker1, ker2=ker2, poly=poly, ak=ak, al=al, bl=bl, sigma_a=sigma_a,alpha=alpha, y_test=Y_test, aw_test=AW_test,
                                           az_test=AZ_test, X=X, wx_dim=wx_dim, zx_dim=zx_dim, offset=offset)
 
     # lmo
     log_params = np.append(np.log(params_l[0]), np.log(params_l[1]))
-    lmo_err = LMO_err_global(log_params_l=log_params, sigma_a=sigma_a, train_size=X.shape[0], W=W, W_nystr_Y=W_nystr_Y,
+    lmo_err = LMO_err_global(ker1=ker1, ker2=ker2, poly=poly, log_params_l=log_params, sigma_a=sigma_a, train_size=X.shape[0], W=W, W_nystr_Y=W_nystr_Y,
                              eig_vec_K=eig_vec_K, inv_eig_val_K=inv_eig_val_K, X=X, Y=Y, wx_dim=wx_dim, nystr=nystr, M=1, offset=offset)
 
     return {'err_in_expectation': mean_sq_error,
@@ -442,6 +517,9 @@ def get_results(do_A, EYhat_do_A, EY_do_A_gt, train_sz, err_in_expectation, mse_
 def experiment(seed, data_seed, param_l_arg, train_size, dev_size, test_size, nystr, args, SAVE_PATH, LOAD_PATH):
     np.random.seed(seed)
     #random.seed(seed)
+    ker1 = args.ker1
+    ker2 = args.ker2
+    poly = args.poly
 
     #X, Y, Z, test_X, test_Y, test_Z, W_marginal, do_A, EY_do_A_gt, wx_dim = process_data(train_size=train_size, dev_size=dev_size,
     X, Y, Z, test_X, test_Y, test_Z, WX_marginal_train, WX_marginal_test, do_A_train, do_A_test, EY_do_A_gt_train, EY_do_A_gt_test, wx_dim, zx_dim = process_data_functional_treat(train_size=train_size, dev_size=dev_size,
@@ -464,7 +542,7 @@ def experiment(seed, data_seed, param_l_arg, train_size, dev_size, test_size, ny
     
     N2 = X.shape[0] ** 2
     print('making W_.')
-    W_ = make_prodkern_with_functional_treat(Z, Z, sigma_wx=ak, sigma_a=sigma_a, wx_dim=zx_dim) + JITTER_W * EYEN
+    W_ = make_prodkern_with_functional_treat(Z, Z, ker1=ker1, ker2=ker2, poly=poly, sigma_wx=ak, sigma_a=sigma_a, wx_dim=zx_dim) + JITTER_W * EYEN
     print('end of making W_.')
     print('W_ condition number: ', np.linalg.cond(W_, p=2))
     W = W_ / N2
@@ -503,7 +581,7 @@ def experiment(seed, data_seed, param_l_arg, train_size, dev_size, test_size, ny
             al, bl = anp.exp(log_al).squeeze(), anp.exp(log_bl).squeeze()
             # print('lmo_err params_l', params_l)
             print('lmo_err al, bl', al, bl)
-            K_L = make_prodkern_with_functional_treat(X, X, al, sigma_a, wx_dim)
+            K_L = make_prodkern_with_functional_treat(X, X, ker1, ker2, poly, al, sigma_a, wx_dim)
             # L = bl * bl * K_L + JITTER * EYEN
             L = bl * bl * K_L + JITTER_L * EYEN
 
@@ -550,7 +628,7 @@ def experiment(seed, data_seed, param_l_arg, train_size, dev_size, test_size, ny
                 log_al, log_bl = params_l[:-1], params_l[-1]
                 al, bl = np.exp(log_al).squeeze(), np.exp(log_bl).squeeze()
                 print('callback al, bl', al, bl)
-                K_L = make_prodkern_with_functional_treat(arr1=X, arr2=X, sigma_wx=al, sigma_a=sigma_a, wx_dim=wx_dim)
+                K_L = make_prodkern_with_functional_treat(arr1=X, arr2=X, ker1=ker1, ker2=ker2, poly=poly,sigma_wx=al, sigma_a=sigma_a, wx_dim=wx_dim)
                 L = bl * bl * K_L + JITTER_L * EYEN
                 # L = bl * bl * K_L
                 if nystr:
@@ -562,7 +640,7 @@ def experiment(seed, data_seed, param_l_arg, train_size, dev_size, test_size, ny
                     LWL_inv = chol_inv(L @ W @ L + L / N2)
                     alpha = LWL_inv @ L @ W @ Y
                     # L_W_inv = chol_inv(W*N2+L_inv)
-                K_L_test = make_prodkern_with_functional_treat(arr1=test_X, arr2=X, sigma_wx=al, sigma_a=sigma_a, wx_dim=wx_dim)
+                K_L_test = make_prodkern_with_functional_treat(arr1=test_X, arr2=X, ker1=ker1, ker2=ker2, poly=poly,sigma_wx=al, sigma_a=sigma_a, wx_dim=wx_dim)
                 test_L = bl * bl * K_L_test
                 pred_mean = test_L @ alpha
                 if timer:
@@ -583,7 +661,7 @@ def experiment(seed, data_seed, param_l_arg, train_size, dev_size, test_size, ny
             if Nfeval % 1 == 0:
                 al, bl = np.exp(log_al0).squeeze(), np.exp(log_bl).squeeze()
                 print('callback al, bl', al, bl)
-                K_L = make_prodkern_with_functional_treat(arr1=X, arr2=X, sigma_wx=al, sigma_a=sigma_a, wx_dim=wx_dim)
+                K_L = make_prodkern_with_functional_treat(arr1=X, arr2=X, ker1=ker1, ker2=ker2, poly=poly, sigma_wx=al, sigma_a=sigma_a, wx_dim=wx_dim)
                 L = bl * bl * K_L + JITTER_L * EYEN
                 # L = bl * bl * K_L
                 if nystr:
@@ -595,7 +673,7 @@ def experiment(seed, data_seed, param_l_arg, train_size, dev_size, test_size, ny
                     LWL_inv = chol_inv(L @ W @ L + L / N2)
                     alpha = LWL_inv @ L @ W @ Y
                     # L_W_inv = chol_inv(W*N2+L_inv)
-                K_L_test = make_prodkern_with_functional_treat(arr1=test_X, arr2=X, sigma_wx=al, sigma_a=sigma_a, wx_dim=wx_dim)
+                K_L_test = make_prodkern_with_functional_treat(arr1=test_X, arr2=X, ker1=ker1, ker2=ker2, poly=poly,sigma_wx=al, sigma_a=sigma_a, wx_dim=wx_dim)
                 test_L = bl * bl * K_L_test
                 pred_mean = test_L @ alpha
                 test_err = ((pred_mean - test_Y) ** 2).mean()  # ((pred_mean-test_Y)**2/np.diag(pred_cov)).mean()+(np.log(np.diag(pred_cov))).mean()
@@ -631,7 +709,7 @@ def experiment(seed, data_seed, param_l_arg, train_size, dev_size, test_size, ny
             print(e)
         # print(res)
         if res.success==False:
-            with open(os.path.join(SAVE_PATH, args.hparam, 'optimization_fail_dataseed{}.txt'.format(data_seed)), 'w') as f: 
+            with open(os.path.join(SAVE_PATH, args.hparam, 'optimization_fail_dataseed{}_K{}_K{}.txt'.format(data_seed,args.ker1,args.ker2)), 'w') as f: 
                 f.write('al: {}, bl: {}'.format(np.exp(log_al0), np.exp(res.x)))
         
         if opt_params_l is None:
@@ -642,7 +720,7 @@ def experiment(seed, data_seed, param_l_arg, train_size, dev_size, test_size, ny
 
         if args.lmo == 'albl':
             args.al_lmo = params_l_final[:-1]
-            args.bl_lmo = params_l_final[1]
+            args.bl_lmo = params_l_final[-1]
         else:
             args.al_lmo = np.exp(log_al0)
             args.bl_lmo = params_l_final
@@ -660,21 +738,25 @@ def experiment(seed, data_seed, param_l_arg, train_size, dev_size, test_size, ny
         raise NotImplementedError
 
     alpha = compute_alpha(train_size=train_size, eig_vec_K=eig_vec_K, W_nystr=W_nystr, X=X, Y=Y, W=W,
-                          eig_val_K=eig_val_K, nystr=nystr, params_l=params_l_final, sigma_a=sigma_a, wx_dim=wx_dim)
+                          eig_val_K=eig_val_K, nystr=nystr, ker1=ker1, ker2=ker2, poly=poly,
+                          params_l=params_l_final, sigma_a=sigma_a, wx_dim=wx_dim)
 
     offset = compute_offset(X=X, W=W, Y=Y, alpha=alpha, params_l=params_l_final) if args.offset else 0
     print('******************* al, bl = {}, {}, offset = {}'.format(al, bl, offset))
     # EYhat_do_A_train = get_causal_effect(do_A=do_A_train, WX_marginal=WX_marginal_train, X=X, wx_dim=wx_dim, alpha=alpha, params_l=params_l_final, sigma_a=sigma_a, offset=offset)
-    EYhat_do_A_test = get_causal_effect(do_A=do_A_test, WX_marginal=WX_marginal_test, X=X, wx_dim=wx_dim, alpha=alpha, params_l=params_l_final, sigma_a=sigma_a, offset=offset)
+    EYhat_do_A_test = get_causal_effect(do_A=do_A_test, WX_marginal=WX_marginal_test, X=X, wx_dim=wx_dim, alpha=alpha, ker1=ker1, ker2=ker2, poly=poly,
+                                        params_l=params_l_final, sigma_a=sigma_a, offset=offset)
 
-    EYhat_do_A_train = get_causal_effect_crossfit(do_A=do_A_train, WX_marginal=WX_marginal_train, X=X, Y=Y, W_=W_, wx_dim=wx_dim, params_l=params_l_final, sigma_a=sigma_a, offset=offset, k=3)
+    EYhat_do_A_train = get_causal_effect_crossfit(do_A=do_A_train, WX_marginal=WX_marginal_train, X=X, Y=Y, W_=W_, wx_dim=wx_dim, 
+                                                  ker1=ker1, ker2=ker2, poly=poly, params_l=params_l_final, sigma_a=sigma_a, offset=offset, k=3)
 
     
     losses = compute_losses(params_l=params_l_final, ax=ax, w_samples=w_samples, y_samples=y_samples, y_axz=y_axz,
                                             x_on=False, AW_test=test_X, AZ_test=test_Z, Y_test=test_Y,
                                             supp_aw=aw_test_supp, supp_y=y_test_supp, supp_az=az_test_supp, X=X, Y=Y, Z=Z,
                                             W=W, W_nystr_Y=W_nystr_Y, eig_vec_K=eig_vec_K, inv_eig_val_K=inv_eig_val_K,
-                                            nystr=nystr, test_Y=test_Y, ak=ak, sigma_a=sigma_a, alpha=alpha, offset=offset, wx_dim=wx_dim, zx_dim=zx_dim, args=args)
+                                            nystr=nystr, test_Y=test_Y,ker1=ker1, ker2=ker2, poly=poly, ak=ak, sigma_a=sigma_a, alpha=alpha, 
+                                            offset=offset, wx_dim=wx_dim, zx_dim=zx_dim, args=args)
 
     causal_effect_mae_train, causal_effect_mse_train = get_results(do_A=do_A_train, EYhat_do_A=EYhat_do_A_train, EY_do_A_gt=EY_do_A_gt_train, train_sz=train_size,
                                              err_in_expectation=losses['err_in_expectation'], mse_alternative=losses['mse_alternative'],
@@ -728,16 +810,16 @@ def do_bl_hparam_analysis_plots(SAVE_PATH, LOAD_PATH, args, train_size, bl_min, 
         plt.plot(ldas, causal_mae_rescaled, label='causal_mae')
         plt.xlim(max(ldas), min(ldas))
         plt.xlabel('Hyperparameter labels'), plt.ylabel('causal_MAE_TRAIN/{}-rescaled'.format(var_str)), plt.legend()
-        print('save path: ', os.path.join(SAVE_PATH, args.hparam, args.sem+'_seed'+str(data_seed), 'hparam_anal_{}_trainsz{}_offset{}.png'.format(var_str, train_size, args.offset)))
-        plt.savefig(os.path.join(SAVE_PATH, args.hparam, args.sem+'_seed'+str(data_seed), 'hparam_anal_{}_trainsz{}_offset{}.png'.format(var_str, train_size, args.offset)))
+        print('save path: ', os.path.join(SAVE_PATH, args.hparam, args.sem+'_seed'+str(data_seed), 'hparam_anal_{}_trainsz{}_K{}_K{}.png'.format(var_str, train_size, args.ker1, args.ker2)))
+        plt.savefig(os.path.join(SAVE_PATH, args.hparam, args.sem+'_seed'+str(data_seed), 'hparam_anal_{}_trainsz{}_K{}_K{}.png'.format(var_str, train_size, args.ker1, args.ker2)))
         plt.close()
 
         plt.figure()
         plt.plot(np.arange(length), var_rescaled, label=var_str)
         plt.plot(np.arange(length), causal_mae_rescaled, label='causal_mae')
         plt.xlabel('Hyperparameter labels'), plt.ylabel('causal_MAE_TRAIN/{}-rescaled'.format(var_str)), plt.legend()
-        print('save path: ', os.path.join(SAVE_PATH, args.hparam, args.sem+'_seed'+str(data_seed), 'hparam_anal_{}_trainsz{}_offset{}_inversc.png'.format(var_str, train_size, args.offset)))
-        plt.savefig(os.path.join(SAVE_PATH, args.hparam, args.sem+'_seed'+str(data_seed), 'hparam_anal_{}_trainsz{}_offset{}_inversc.png'.format(var_str, train_size, args.offset)))
+        print('save path: ', os.path.join(SAVE_PATH, args.hparam, args.sem+'_seed'+str(data_seed), 'hparam_anal_{}_trainsz{}_K{}_K{}_inversc.png'.format(var_str, train_size, args.ker1, args.ker2)))
+        plt.savefig(os.path.join(SAVE_PATH, args.hparam, args.sem+'_seed'+str(data_seed), 'hparam_anal_{}_trainsz{}_K{}_K{}_inversc.png'.format(var_str, train_size, args.ker1, args.ker2)))
         plt.close()
 
 
@@ -832,7 +914,7 @@ def cube_search(al_diff_min, al_diff_max, al_mesh_size, bl_min, bl_max, bl_mesh_
 
     print('best mae found at params_l: {} using hparam search method: {}'.format(best_hparams_l,
                                                                                       args.hparam))
-    with open(os.path.join(SAVE_PATH, args.hparam, args.sem+'_seed'+str(data_seed), 'best_params_l_cube_trainsz{}_offset{}.txt'.format(train_size, args.offset)), 'w') as f:
+    with open(os.path.join(SAVE_PATH, args.hparam, args.sem+'_seed'+str(data_seed), 'best_params_l_cube_trainsz{}_K{}_K{}.txt'.format(train_size, args.ker1, args.ker2)), 'w') as f:
         f.write('best al: {}, best bl: {:.3f}'.format(best_hparams_l[0], best_hparams_l[-1]))
 
     return best_hparams_l, best_ate_est_train, best_ate_est_test
@@ -906,17 +988,20 @@ def run_pmmr_rkhs(seed, al_diff_search_range, bl_search_range, train_sizes, data
             best_causal_mse_out, best_causal_mae_out, best_causal_std_out, best_causal_rel_err_out = evaluate_ate_est(ate_est=best_ate_est_test,
                                                                                      ate_gt=EY_do_A_test)
             np.savez(os.path.join(SAVE_PATH, args.hparam, args.sem + '_seed' + str(data_seed),
-                                  'mmr_res_trainsz{}_offset{}.npz'.format(train_size, args.offset)), do_A_train=do_A_train, do_A_test=do_A_test, ate_est_train=best_ate_est_train, ate_est_test=best_ate_est_test,
+                                  'mmr_res_trainsz{}_K{}_K{}.npz'.format(train_size, args.ker1, args.ker2)), do_A_train=do_A_train, do_A_test=do_A_test, ate_est_train=best_ate_est_train, ate_est_test=best_ate_est_test,
                      bl=best_hparams_l[1], train_sz=train_size,
                      causal_mse_in=best_causal_mse_in, causal_mse_out=best_causal_mse_out)
             
             causal_mse_over_seeds.append([best_causal_mse_in, best_causal_mse_out])
+            
+            print('Complete seed', data_seed)
+            
        #print('av c-MAE: ', np.mean(causal_mae_over_seeds))
           
         # convert array into dataframe
-        mse_DF = pd.DataFrame(causal_mse_over_seeds, columns=["mse_in","mse_out"])
+        # mse_DF = pd.DataFrame(causal_mse_over_seeds, columns=["mse_in","mse_out"])
         # save the dataframe as a csv file
-        mse_DF.to_csv(os.path.join(SAVE_PATH, args.hparam,'mse_trainsz{}_{}.csv'.format(train_size, sname)), index=False)
+        # mse_DF.to_csv(os.path.join(SAVE_PATH, args.hparam,'mse_trainsz{}_{}.csv'.format(train_size, sname)), index=False)
 
         #print('av c-MSE: ', np.mean(causal_mse_over_seeds, axis=0))
         

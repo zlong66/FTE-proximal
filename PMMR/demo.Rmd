@@ -46,18 +46,22 @@ for (k in 1:nrow(grid)){
 
 
 ```{python}
+# set the working directory as "~/PMMR", where you have the folder "simulation data"
+
 from pmmr_crossfit import *
+
 
 sname = "linear_1_size400"
 data_seeds = [100]
 
-ROOT_PATH = "~/PMMR" # the directory where you have the folder "simulation data"
+# ROOT_PATH = "~/PMMR" # the directory where you have the folder "simulation data"
 
 # set up the parameters
 log_al_bounds, log_bl_bounds = np.array([-1.5, 1.5]), np.array([-4., 2.])
 args = parameters(sem="sim", hparam="lmo", selection_metric="mmr_v", cond_metric=False,
               supp_test=False, log_al_bounds=log_al_bounds, log_bl_bounds=log_bl_bounds, 
-              nystr_M=nystr_M, offset=False, lmo="bl")
+              nystr_M=nystr_M, offset=False, lmo="bl", 
+              ker1="gauss", ker2="gauss", poly=[1,1])
 
 
 

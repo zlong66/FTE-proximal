@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 #    remove_outliers, nystrom_decomp_from_orig, nystrom_decomp_from_sub, chol_inv, bundle_az_aw, visualise_ATEs, data_transform, data_inv_transform, indicator_kern
 from util_R import get_median_inter_mnist, Kernel, load_data, ROOT_PATH, jitchol, _sqdist, \
     remove_outliers, nystrom_decomp_from_orig, nystrom_decomp_from_sub, chol_inv, bundle_az_aw, visualise_ATEs, data_transform, data_inv_transform, indicator_kern
-from simulation_arthur import data_transform
+# from simulation_arthur import data_transform
 from datetime import date
 from sklearn.metrics import pairwise_distances
 from sklearn.model_selection import KFold
