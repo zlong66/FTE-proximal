@@ -1,4 +1,5 @@
 # FTE-proximal
+This package implements the method for functional treatment effect estimation under the presence of unmeasured confounding
 
 ### PAGMM
 Simulated datasets are generated using [data_generation_pagmm.R](data_generation_pagmm.R)
