@@ -1,5 +1,7 @@
 # FTE-proximal
-This package implements the method for functional treatment effect estimation under the presence of unmeasured confounding
+This package implements the method for [Learning causal effect of physical activity distribution: an application
+of functional treatment effect estimation with unmeasured](https://doi.org/10.1080/02664763.2025.2474611)
+confounding
 
 ### PAGMM
 Simulated datasets are generated using [data_generation_pagmm.R](data_generation_pagmm.R)
